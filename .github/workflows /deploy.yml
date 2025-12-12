@@ -15,6 +15,7 @@ jobs:
       TF_VAR_sender_email: ${{ secrets.SENDER_EMAIL }}
       TF_VAR_recipient_email: ${{ secrets.RECIPIENT_EMAIL }}
       TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
+      TF_VAR_monitored_services: '["auth-service", "payment-api", "frontend"]'
       STATE_BUCKET_NAME: "my-ecs-alerter-state-bucket-unique-123"
 
     steps:

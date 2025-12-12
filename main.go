@@ -20,10 +20,11 @@ import (
 
 // Holds the env variables
 type Config struct {
-	SlackWebhookURL string
-	SenderEmail     string
-	RecipientEmail  string
-	AWSRegion       string
+	SlackWebhookURL   string
+	SenderEmail       string
+	RecipientEmail    string
+	AWSRegion         string
+	MonitoredServices []string
 }
 
 type ECSDeplomentDetail struct {
@@ -55,12 +56,22 @@ var (
 )
 
 func init() {
+	servicesEnv := os.Getenv("MONITORED_SERVICES")
+	var servicesList []string
+	if servicesEnv != "" {
+		servicesList = strings.Split(servicesEnv, ",")
+		// Trim spaces just in case
+		for i := range servicesList {
+			servicesList[i] = strings.TrimSpace(servicesList[i])
+		}
+	}
 	// Load configuration from environment variables or a config file
 	cfg = Config{
-		SlackWebhookURL: os.Getenv("SLACK_WEBHOOK_URL"),
-		SenderEmail:     os.Getenv("SENDER_EMAIL"),
-		RecipientEmail:  os.Getenv("RECIPIENT_EMAIL"),
-		AWSRegion:       os.Getenv("AWS_REGION"),
+		SlackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
+		SenderEmail:       os.Getenv("SENDER_EMAIL"),
+		RecipientEmail:    os.Getenv("RECIPIENT_EMAIL"),
+		AWSRegion:         os.Getenv("AWS_REGION"),
+		MonitoredServices: servicesList,
 	}
 
 	// Initialize AWS SDK
@@ -104,6 +115,7 @@ func handleRequest(ctx context.Context, event events.CloudWatchEvent) error {
 		if err := json.Unmarshal(event.Detail, &detail); err != nil {
 			return fmt.Errorf("failed to unmarshal task detail: %v", err)
 		}
+		serviceName := getServiceNameFromGroup(detail.Group)
 
 		// We only care if the task STOPPED and it wasn't a manual stop (exit code != 0)
 		if detail.LastStatus == "STOPPED" {
@@ -129,11 +141,28 @@ func handleRequest(ctx context.Context, event events.CloudWatchEvent) error {
 
 			if failedContainerFound {
 				isAlert = true
-				serviceName := getServiceNameFromGroup(detail.Group)
 				subject = fmt.Sprintf("⚠️ ECS Task Failure: %s", serviceName)
 				message = fmt.Sprintf("*Service:* %s\n*Task ARN:* %s\n*Failure Details:*\n%s",
 					serviceName, detail.TaskArn, failureDetails)
 			}
+		}
+	}
+	var serviceName string
+	if event.DetailType == "ECS Task State Change" {
+		var detail ECSTaskDetail
+		if err := json.Unmarshal(event.Detail, &detail); err == nil {
+			serviceName = getServiceNameFromGroup(detail.Group)
+		}
+	} else if event.DetailType == "ECS Deployment State Change" {
+		var detail ECSDeplomentDetail
+		if err := json.Unmarshal(event.Detail, &detail); err == nil {
+			serviceName = getResourceName(detail.Service)
+		}
+	}
+	if len(cfg.MonitoredServices) > 0 {
+		if !contains(cfg.MonitoredServices, serviceName) {
+			log.Printf("Skipping alert for service '%s' (not in allowed list)", serviceName)
+			return nil
 		}
 	}
 
@@ -156,6 +185,15 @@ func handleRequest(ctx context.Context, event events.CloudWatchEvent) error {
 	}
 
 	return nil
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 func sendSlackNotification(text string) error {

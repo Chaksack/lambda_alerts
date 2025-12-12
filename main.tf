@@ -69,6 +69,7 @@ resource "aws_lambda_function" "ecs_alerter" {
       SENDER_EMAIL      = var.sender_email
       RECIPIENT_EMAIL   = var.recipient_email
       AWS_REGION        = var.aws_region
+      MONITORED_SERVICES = join(",", var.monitored_services)
     }
   }
 }
