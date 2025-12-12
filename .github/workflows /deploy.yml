@@ -1,0 +1,72 @@
+name: Deploy ECS Alerter
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    env:
+      TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+      TF_VAR_sender_email: ${{ secrets.SENDER_EMAIL }}
+      TF_VAR_recipient_email: ${{ secrets.RECIPIENT_EMAIL }}
+      TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
+      STATE_BUCKET_NAME: "my-ecs-alerter-state-bucket-unique-123"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Install Go Compiler
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25'
+
+      - name: Compile and Zip Application
+        run: |
+          echo "Building Go binary..."
+          # AWS Lambda provided.al2023 runtime REQUIRES the binary to be named 'bootstrap'
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o bootstrap main.go
+          
+          echo "Zipping binary..."
+          zip lambda_function_payload.zip bootstrap
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.0
+
+      - name: Authenticate with AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Create S3 Backend Bucket (If Missing)
+        run: |
+          echo "Checking if bucket $STATE_BUCKET_NAME exists..."
+          if aws s3api head-bucket --bucket "$STATE_BUCKET_NAME" 2>/dev/null; then
+            echo "Bucket exists."
+          else
+            echo "Bucket does not exist. Creating..."
+            aws s3api create-bucket --bucket "$STATE_BUCKET_NAME" --region ${{ secrets.AWS_REGION }}
+            
+            # Enable Versioning for safety
+            aws s3api put-bucket-versioning --bucket "$STATE_BUCKET_NAME" --versioning-configuration Status=Enabled
+            echo "Bucket created and versioning enabled."
+          fi
+
+      - name: Initialize Terraform Backend
+        run: terraform init
+
+      - name: Preview Infrastructure Changes
+        run: terraform plan -input=false
+
+      - name: Apply Changes to AWS
+        if: github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve -input=false
